@@ -1,82 +1,149 @@
-import os
-from flask import Flask, request, jsonify, render_template_string
+from flask import Flask, request, jsonify
+from flask_cors import CORS
 import google.generativeai as genai
+import os
 
-# Lấy API key từ Render Environment
-genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
+app = Flask(__name__)
+CORS(app)
+
+# Lấy API KEY từ biến môi trường
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 model = genai.GenerativeModel("gemini-1.5-flash")
 
-app = Flask(__name__)
-
-# Lưu lịch sử chat tạm thời (RAM)
-chat_history = []
-
+# ===== GIAO DIỆN =====
 HTML = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Gemini Chat Bot</title>
-    <style>
-        body { font-family: Arial; background: #111; color: white; padding: 20px; }
-        .chat-box { max-width: 600px; margin: auto; }
-        .msg { margin: 10px 0; }
-        .user { color: #00ffcc; }
-        .bot { color: #ffcc00; }
-        input { width: 80%; padding: 10px; }
-        button { padding: 10px; }
-    </style>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Chat Tư Vấn</title>
+<style>
+body { margin:0; font-family:Arial; }
+
+#chatBtn {
+    position:fixed;
+    bottom:20px;
+    right:20px;
+    width:60px;
+    height:60px;
+    background:#4CAF50;
+    border-radius:50%;
+    color:white;
+    font-size:28px;
+    text-align:center;
+    line-height:60px;
+    cursor:pointer;
+}
+
+#chatBox {
+    position:fixed;
+    bottom:90px;
+    right:20px;
+    width:320px;
+    height:420px;
+    background:white;
+    border-radius:15px;
+    box-shadow:0 0 15px rgba(0,0,0,0.2);
+    display:none;
+    flex-direction:column;
+}
+
+#header {
+    background:#4CAF50;
+    color:white;
+    padding:12px;
+    border-radius:15px 15px 0 0;
+}
+
+#messages {
+    flex:1;
+    padding:10px;
+    overflow-y:auto;
+    font-size:14px;
+}
+
+.msg { margin:8px 0; }
+.user { text-align:right; color:#2196F3; }
+.bot { text-align:left; color:#333; }
+
+#inputArea {
+    display:flex;
+    border-top:1px solid #ddd;
+}
+
+#inputArea input {
+    flex:1;
+    border:none;
+    padding:10px;
+}
+
+#inputArea button {
+    border:none;
+    background:#4CAF50;
+    color:white;
+    padding:10px 15px;
+}
+</style>
 </head>
 <body>
-<div class="chat-box">
-    <h2>Gemini Chat</h2>
-    <div id="chat"></div>
-    <input id="msg" placeholder="Nhập tin nhắn..." />
-    <button onclick="send()">Gửi</button>
+
+<div id="chatBtn" onclick="toggleChat()">💬</div>
+
+<div id="chatBox">
+    <div id="header">Tư vấn Online</div>
+    <div id="messages">
+        <div class="msg bot">Xin chào 👋 Tôi có thể giúp gì cho bạn?</div>
+    </div>
+    <div id="inputArea">
+        <input id="msg" placeholder="Nhập câu hỏi...">
+        <button onclick="send()">Gửi</button>
+    </div>
 </div>
 
 <script>
-async function send() {
-    let msg = document.getElementById("msg").value;
-    if (!msg) return;
+function toggleChat(){
+    let box=document.getElementById("chatBox");
+    box.style.display = box.style.display==="flex" ? "none" : "flex";
+}
 
-    document.getElementById("chat").innerHTML += 
-        "<div class='msg user'>Bạn: " + msg + "</div>";
+async function send(){
+    let msg=document.getElementById("msg").value;
+    if(!msg) return;
 
-    document.getElementById("msg").value = "";
+    let messages=document.getElementById("messages");
+    messages.innerHTML += "<div class='msg user'>"+msg+"</div>";
+    document.getElementById("msg").value="";
 
-    let res = await fetch("/chat", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({message: msg})
+    let res=await fetch("/chat",{
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({message:msg})
     });
 
-    let data = await res.json();
-
-    document.getElementById("chat").innerHTML += 
-        "<div class='msg bot'>Bot: " + data.reply + "</div>";
+    let data=await res.json();
+    messages.innerHTML += "<div class='msg bot'>"+data.reply+"</div>";
+    messages.scrollTop = messages.scrollHeight;
 }
 </script>
+
 </body>
 </html>
 """
 
 @app.route("/")
 def home():
-    return render_template_string(HTML)
+    return HTML
 
 @app.route("/chat", methods=["POST"])
 def chat():
-    user_message = request.json["message"]
+    user_message = request.json.get("message")
 
-    chat_history.append({"role": "user", "parts": [user_message]})
+    response = model.generate_content(
+        f"Bạn là trợ lý tư vấn chuyên nghiệp. Trả lời ngắn gọn, dễ hiểu.\n\nKhách hỏi: {user_message}"
+    )
 
-    response = model.generate_content(chat_history)
+    return jsonify({"reply": response.text})
 
-    bot_reply = response.text
-
-    chat_history.append({"role": "model", "parts": [bot_reply]})
-
-    return jsonify({"reply": bot_reply})
-
-# KHÔNG cần app.run vì dùng gunicorn
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=10000)
