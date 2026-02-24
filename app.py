@@ -1,196 +1,190 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, render_template_string
 from flask_cors import CORS
 import google.generativeai as genai
 import sqlite3
+import uuid
 import os
 
 app = Flask(__name__)
 CORS(app)
 
-# ===== GEMINI API =====
+# ====== GEMINI CONFIG ======
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 model = genai.GenerativeModel("gemini-1.5-flash")
 
-# ===== DATABASE =====
+# ====== DATABASE ======
 def init_db():
     conn = sqlite3.connect("chat.db")
     c = conn.cursor()
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            sender TEXT,
-            message TEXT
-        )
-    """)
+    c.execute("""CREATE TABLE IF NOT EXISTS messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    room TEXT,
+                    sender TEXT,
+                    message TEXT
+                )""")
     conn.commit()
     conn.close()
 
 init_db()
 
-# ===== GIAO DIỆN CHÍNH (CHATBOX) =====
+# ====== FRONTEND ======
 @app.route("/")
-def home():
-    return """
+def index():
+    return render_template_string("""
 <!DOCTYPE html>
 <html>
 <head>
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AI Chat</title>
+<title>AI Tư Vấn</title>
 <style>
 body{
-    margin:0;
     background:#0f0f0f;
-    font-family:Arial;
     color:white;
+    font-family:Arial;
+    margin:0;
 }
-#chat{
-    max-width:500px;
-    margin:auto;
-    height:100vh;
-    display:flex;
-    flex-direction:column;
-}
-#header{
+.header{
+    background:#1c1c1c;
     padding:15px;
     text-align:center;
-    background:#1f1f1f;
-    font-size:18px;
+    font-size:20px;
     font-weight:bold;
 }
-#messages{
-    flex:1;
+.chat-box{
     padding:15px;
+    height:75vh;
     overflow-y:auto;
 }
-.msg{
+.message{
     margin:10px 0;
-    padding:10px 15px;
-    border-radius:15px;
+    padding:12px 16px;
+    border-radius:20px;
     max-width:75%;
 }
 .user{
-    background:#2563eb;
+    background:#2962ff;
     margin-left:auto;
 }
 .ai{
-    background:#333;
+    background:#2b2b2b;
 }
-#input{
+.input-box{
     display:flex;
     padding:10px;
-    background:#1f1f1f;
+    background:#1c1c1c;
 }
-#input input{
+input{
     flex:1;
     padding:10px;
     border:none;
-    border-radius:10px;
-    background:#2a2a2a;
-    color:white;
+    border-radius:20px;
+    outline:none;
 }
-#input button{
-    margin-left:10px;
-    padding:10px 15px;
+button{
+    background:#2962ff;
     border:none;
-    border-radius:10px;
-    background:#2563eb;
     color:white;
+    padding:10px 15px;
+    margin-left:10px;
+    border-radius:20px;
+    cursor:pointer;
 }
 </style>
 </head>
 <body>
 
-<div id="chat">
-    <div id="header">🤖 AI Tư Vấn</div>
-    <div id="messages"></div>
-    <div id="input">
-        <input id="msg" placeholder="Nhập tin nhắn...">
-        <button onclick="send()">Gửi</button>
-    </div>
+<div class="header">🤖 AI Tư Vấn</div>
+
+<div class="chat-box" id="chat"></div>
+
+<div class="input-box">
+    <input id="message" placeholder="Nhập tin nhắn...">
+    <button onclick="sendMessage()">Gửi</button>
 </div>
 
 <script>
-async function loadMessages(){
-    let res = await fetch("/get_messages");
-    let data = await res.json();
-    let box = document.getElementById("messages");
-    box.innerHTML="";
-    data.forEach(m=>{
-        box.innerHTML += `<div class='msg ${m.sender}'>${m.message}</div>`;
-    });
-    box.scrollTop = box.scrollHeight;
+let room = localStorage.getItem("room");
+if(!room){
+    room = crypto.randomUUID();
+    localStorage.setItem("room", room);
 }
 
-async function send(){
-    let msg = document.getElementById("msg").value;
-    if(!msg) return;
+async function loadMessages(){
+    const res = await fetch("/messages?room=" + room);
+    const data = await res.json();
+    const chat = document.getElementById("chat");
+    chat.innerHTML = "";
+    data.forEach(msg=>{
+        chat.innerHTML += `
+        <div class="message ${msg.sender}">
+            ${msg.message}
+        </div>`;
+    });
+    chat.scrollTop = chat.scrollHeight;
+}
 
+async function sendMessage(){
+    const input = document.getElementById("message");
+    const text = input.value;
+    if(!text) return;
+
+    input.value="";
     await fetch("/chat",{
         method:"POST",
         headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({message:msg})
+        body:JSON.stringify({room:room,message:text})
     });
 
-    document.getElementById("msg").value="";
     loadMessages();
 }
 
 loadMessages();
-setInterval(loadMessages,2000);
 </script>
 
 </body>
 </html>
-"""
+""")
 
-# ===== API CHAT =====
+# ====== CHAT API ======
 @app.route("/chat", methods=["POST"])
 def chat():
-    user_message = request.json.get("message")
+    data = request.json
+    room = data["room"]
+    user_message = data["message"]
 
     conn = sqlite3.connect("chat.db")
     c = conn.cursor()
-
-    # Lưu user
-    c.execute("INSERT INTO messages (sender, message) VALUES (?,?)", ("user", user_message))
+    c.execute("INSERT INTO messages (room,sender,message) VALUES (?,?,?)",
+              (room,"user",user_message))
     conn.commit()
 
-    # AI trả lời
-    response = model.generate_content(user_message)
-    ai_reply = response.text
+    # AI trả lời (tối ưu tốc độ)
+    response = model.generate_content(
+        user_message,
+        generation_config={
+            "max_output_tokens": 300,
+            "temperature": 0.7
+        }
+    )
 
-    # Lưu AI
-    c.execute("INSERT INTO messages (sender, message) VALUES (?,?)", ("ai", ai_reply))
+    ai_text = response.text
+
+    c.execute("INSERT INTO messages (room,sender,message) VALUES (?,?,?)",
+              (room,"ai",ai_text))
     conn.commit()
     conn.close()
 
-    return jsonify({"reply": ai_reply})
+    return jsonify({"reply": ai_text})
 
-# ===== LẤY TIN NHẮN =====
-@app.route("/get_messages")
-def get_messages():
+# ====== LOAD MESSAGES ======
+@app.route("/messages")
+def messages():
+    room = request.args.get("room")
     conn = sqlite3.connect("chat.db")
     c = conn.cursor()
-    c.execute("SELECT sender, message FROM messages")
-    data = [{"sender":row[0], "message":row[1]} for row in c.fetchall()]
+    c.execute("SELECT sender,message FROM messages WHERE room=?",(room,))
+    data = [{"sender":row[0],"message":row[1]} for row in c.fetchall()]
     conn.close()
     return jsonify(data)
 
-# ===== ADMIN =====
-@app.route("/admin")
-def admin():
-    conn = sqlite3.connect("chat.db")
-    c = conn.cursor()
-    c.execute("SELECT sender, message FROM messages")
-    data = c.fetchall()
-    conn.close()
-
-    html = "<h2 style='color:white;background:black;padding:10px'>Admin Panel</h2>"
-    html += "<div style='background:black;color:white;padding:15px'>"
-    for row in data:
-        html += f"<p><b>{row[0]}:</b> {row[1]}</p>"
-    html += "</div>"
-    return html
-
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    app.run()
