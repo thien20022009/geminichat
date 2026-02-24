@@ -1,52 +1,82 @@
-from flask import Flask, request, render_template_string
-import google.generativeai as genai
 import os
+from flask import Flask, request, jsonify, render_template_string
+import google.generativeai as genai
 
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+# Lấy API key từ Render Environment
+genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
+
 model = genai.GenerativeModel("gemini-1.5-flash")
 
 app = Flask(__name__)
 
+# Lưu lịch sử chat tạm thời (RAM)
 chat_history = []
 
-html = """
+HTML = """
 <!DOCTYPE html>
 <html>
 <head>
-<title>Gemini Chat</title>
-<style>
-body {background:#0f172a;color:white;font-family:Arial;text-align:center;}
-.chat-box {background:#1e293b;padding:15px;border-radius:10px;height:400px;overflow-y:auto;}
-.user {color:#38bdf8;text-align:right;}
-.bot {color:#4ade80;text-align:left;}
-input {width:70%;padding:10px;border-radius:10px;border:none;}
-button {padding:10px;border-radius:10px;border:none;background:#22d3ee;}
-</style>
+    <title>Gemini Chat Bot</title>
+    <style>
+        body { font-family: Arial; background: #111; color: white; padding: 20px; }
+        .chat-box { max-width: 600px; margin: auto; }
+        .msg { margin: 10px 0; }
+        .user { color: #00ffcc; }
+        .bot { color: #ffcc00; }
+        input { width: 80%; padding: 10px; }
+        button { padding: 10px; }
+    </style>
 </head>
 <body>
-<h2>🤖 Gemini 24/7</h2>
 <div class="chat-box">
-{% for role, message in history %}
-<p class="{{ role }}"><b>{{ role }}:</b> {{ message }}</p>
-{% endfor %}
+    <h2>Gemini Chat</h2>
+    <div id="chat"></div>
+    <input id="msg" placeholder="Nhập tin nhắn..." />
+    <button onclick="send()">Gửi</button>
 </div>
-<form method="post">
-<input name="message" required>
-<button type="submit">Send</button>
-</form>
+
+<script>
+async function send() {
+    let msg = document.getElementById("msg").value;
+    if (!msg) return;
+
+    document.getElementById("chat").innerHTML += 
+        "<div class='msg user'>Bạn: " + msg + "</div>";
+
+    document.getElementById("msg").value = "";
+
+    let res = await fetch("/chat", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({message: msg})
+    });
+
+    let data = await res.json();
+
+    document.getElementById("chat").innerHTML += 
+        "<div class='msg bot'>Bot: " + data.reply + "</div>";
+}
+</script>
 </body>
 </html>
 """
 
-@app.route("/", methods=["GET","POST"])
+@app.route("/")
 def home():
-    global chat_history
-    if request.method == "POST":
-        user_input = request.form["message"]
-        chat_history.append(("user", user_input))
-        response = model.generate_content(user_input)
-        chat_history.append(("bot", response.text))
-    return render_template_string(html, history=chat_history)
+    return render_template_string(HTML)
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+@app.route("/chat", methods=["POST"])
+def chat():
+    user_message = request.json["message"]
+
+    chat_history.append({"role": "user", "parts": [user_message]})
+
+    response = model.generate_content(chat_history)
+
+    bot_reply = response.text
+
+    chat_history.append({"role": "model", "parts": [bot_reply]})
+
+    return jsonify({"reply": bot_reply})
+
+# KHÔNG cần app.run vì dùng gunicorn
