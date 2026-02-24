@@ -1,149 +1,196 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import google.generativeai as genai
+import sqlite3
 import os
 
 app = Flask(__name__)
 CORS(app)
 
-# Lấy API KEY từ biến môi trường
+# ===== GEMINI API =====
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-
 model = genai.GenerativeModel("gemini-1.5-flash")
 
-# ===== GIAO DIỆN =====
-HTML = """
+# ===== DATABASE =====
+def init_db():
+    conn = sqlite3.connect("chat.db")
+    c = conn.cursor()
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sender TEXT,
+            message TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+init_db()
+
+# ===== GIAO DIỆN CHÍNH (CHATBOX) =====
+@app.route("/")
+def home():
+    return """
 <!DOCTYPE html>
 <html>
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Chat Tư Vấn</title>
+<title>AI Chat</title>
 <style>
-body { margin:0; font-family:Arial; }
-
-#chatBtn {
-    position:fixed;
-    bottom:20px;
-    right:20px;
-    width:60px;
-    height:60px;
-    background:#4CAF50;
-    border-radius:50%;
+body{
+    margin:0;
+    background:#0f0f0f;
+    font-family:Arial;
     color:white;
-    font-size:28px;
-    text-align:center;
-    line-height:60px;
-    cursor:pointer;
 }
-
-#chatBox {
-    position:fixed;
-    bottom:90px;
-    right:20px;
-    width:320px;
-    height:420px;
-    background:white;
-    border-radius:15px;
-    box-shadow:0 0 15px rgba(0,0,0,0.2);
-    display:none;
+#chat{
+    max-width:500px;
+    margin:auto;
+    height:100vh;
+    display:flex;
     flex-direction:column;
 }
-
-#header {
-    background:#4CAF50;
-    color:white;
-    padding:12px;
-    border-radius:15px 15px 0 0;
+#header{
+    padding:15px;
+    text-align:center;
+    background:#1f1f1f;
+    font-size:18px;
+    font-weight:bold;
 }
-
-#messages {
+#messages{
     flex:1;
-    padding:10px;
+    padding:15px;
     overflow-y:auto;
-    font-size:14px;
 }
-
-.msg { margin:8px 0; }
-.user { text-align:right; color:#2196F3; }
-.bot { text-align:left; color:#333; }
-
-#inputArea {
-    display:flex;
-    border-top:1px solid #ddd;
-}
-
-#inputArea input {
-    flex:1;
-    border:none;
-    padding:10px;
-}
-
-#inputArea button {
-    border:none;
-    background:#4CAF50;
-    color:white;
+.msg{
+    margin:10px 0;
     padding:10px 15px;
+    border-radius:15px;
+    max-width:75%;
+}
+.user{
+    background:#2563eb;
+    margin-left:auto;
+}
+.ai{
+    background:#333;
+}
+#input{
+    display:flex;
+    padding:10px;
+    background:#1f1f1f;
+}
+#input input{
+    flex:1;
+    padding:10px;
+    border:none;
+    border-radius:10px;
+    background:#2a2a2a;
+    color:white;
+}
+#input button{
+    margin-left:10px;
+    padding:10px 15px;
+    border:none;
+    border-radius:10px;
+    background:#2563eb;
+    color:white;
 }
 </style>
 </head>
 <body>
 
-<div id="chatBtn" onclick="toggleChat()">💬</div>
-
-<div id="chatBox">
-    <div id="header">Tư vấn Online</div>
-    <div id="messages">
-        <div class="msg bot">Xin chào 👋 Tôi có thể giúp gì cho bạn?</div>
-    </div>
-    <div id="inputArea">
-        <input id="msg" placeholder="Nhập câu hỏi...">
+<div id="chat">
+    <div id="header">🤖 AI Tư Vấn</div>
+    <div id="messages"></div>
+    <div id="input">
+        <input id="msg" placeholder="Nhập tin nhắn...">
         <button onclick="send()">Gửi</button>
     </div>
 </div>
 
 <script>
-function toggleChat(){
-    let box=document.getElementById("chatBox");
-    box.style.display = box.style.display==="flex" ? "none" : "flex";
+async function loadMessages(){
+    let res = await fetch("/get_messages");
+    let data = await res.json();
+    let box = document.getElementById("messages");
+    box.innerHTML="";
+    data.forEach(m=>{
+        box.innerHTML += `<div class='msg ${m.sender}'>${m.message}</div>`;
+    });
+    box.scrollTop = box.scrollHeight;
 }
 
 async function send(){
-    let msg=document.getElementById("msg").value;
+    let msg = document.getElementById("msg").value;
     if(!msg) return;
 
-    let messages=document.getElementById("messages");
-    messages.innerHTML += "<div class='msg user'>"+msg+"</div>";
-    document.getElementById("msg").value="";
-
-    let res=await fetch("/chat",{
+    await fetch("/chat",{
         method:"POST",
         headers:{"Content-Type":"application/json"},
         body:JSON.stringify({message:msg})
     });
 
-    let data=await res.json();
-    messages.innerHTML += "<div class='msg bot'>"+data.reply+"</div>";
-    messages.scrollTop = messages.scrollHeight;
+    document.getElementById("msg").value="";
+    loadMessages();
 }
+
+loadMessages();
+setInterval(loadMessages,2000);
 </script>
 
 </body>
 </html>
 """
 
-@app.route("/")
-def home():
-    return HTML
-
+# ===== API CHAT =====
 @app.route("/chat", methods=["POST"])
 def chat():
     user_message = request.json.get("message")
 
-    response = model.generate_content(
-        f"Bạn là trợ lý tư vấn chuyên nghiệp. Trả lời ngắn gọn, dễ hiểu.\n\nKhách hỏi: {user_message}"
-    )
+    conn = sqlite3.connect("chat.db")
+    c = conn.cursor()
 
-    return jsonify({"reply": response.text})
+    # Lưu user
+    c.execute("INSERT INTO messages (sender, message) VALUES (?,?)", ("user", user_message))
+    conn.commit()
+
+    # AI trả lời
+    response = model.generate_content(user_message)
+    ai_reply = response.text
+
+    # Lưu AI
+    c.execute("INSERT INTO messages (sender, message) VALUES (?,?)", ("ai", ai_reply))
+    conn.commit()
+    conn.close()
+
+    return jsonify({"reply": ai_reply})
+
+# ===== LẤY TIN NHẮN =====
+@app.route("/get_messages")
+def get_messages():
+    conn = sqlite3.connect("chat.db")
+    c = conn.cursor()
+    c.execute("SELECT sender, message FROM messages")
+    data = [{"sender":row[0], "message":row[1]} for row in c.fetchall()]
+    conn.close()
+    return jsonify(data)
+
+# ===== ADMIN =====
+@app.route("/admin")
+def admin():
+    conn = sqlite3.connect("chat.db")
+    c = conn.cursor()
+    c.execute("SELECT sender, message FROM messages")
+    data = c.fetchall()
+    conn.close()
+
+    html = "<h2 style='color:white;background:black;padding:10px'>Admin Panel</h2>"
+    html += "<div style='background:black;color:white;padding:15px'>"
+    for row in data:
+        html += f"<p><b>{row[0]}:</b> {row[1]}</p>"
+    html += "</div>"
+    return html
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
